@@ -1,8 +1,10 @@
 # Homework 2 — Chemical Information Chatbot Agent
 
-## Group Member(s)
-
-Matthew Anderson
+## Group Members
+- Miles Huang
+- Matthew Anderson
+- Pei Yu Hsueh
+- Armineh Rezagholilalani
 
 ## System Prompt Strategy
 
