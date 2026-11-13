@@ -3,10 +3,79 @@
 # ---------------------------------------------------------------------------
 # torch: the deep-learning framework the model runs on.
 # transformers: Hugging Face library that gives us the model + tokenizer.
+import json
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from rdkit import Chem
 from rdkit.Chem import Descriptors, Crippen, Lipinski, QED, rdMolDescriptors
+
+### Text formatting helpers
+def format_property_value(property_name, value):
+    """Format an RDKit descriptor for readable terminal output."""
+    if property_name == "molecular_weight":
+        return f"{value:.3f} g/mol"
+
+    if property_name == "logP":
+        return f"{value:.4f}"
+
+    if property_name == "TPSA":
+        return f"{value:.2f} Å²"
+
+    # Count-based properties
+    return str(int(value))
+
+
+def print_properties_table(smiles, output_properties):
+    """Print an aligned table using only built-in Python functionality."""
+    headers = ["Property", "Value"]
+
+    rows = [
+        [
+            property_data["property"],
+            format_property_value(
+                property_data["property"],
+                property_data["value"],
+            ),
+        ]
+        for property_data in output_properties
+    ]
+
+    if not rows:
+        print(f"No properties could be calculated for {smiles}.")
+        return
+
+    column_widths = [
+        max(
+            len(headers[column_index]),
+            *(len(row[column_index]) for row in rows),
+        )
+        for column_index in range(len(headers))
+    ]
+
+    header_line = " | ".join(
+        headers[column_index].ljust(column_widths[column_index])
+        for column_index in range(len(headers))
+    )
+
+    separator_line = "-+-".join(
+        "-" * column_width
+        for column_width in column_widths
+    )
+
+    print(f"Here are the calculated properties for {smiles}:")
+    print(header_line)
+    print(separator_line)
+
+    for row in rows:
+        print(
+            " | ".join(
+                row[column_index].ljust(column_widths[column_index])
+                for column_index in range(len(row))
+            )
+        )
+
+###
 
 # ---------------------------------------------------------------------------
 # Model + device configuration
@@ -28,12 +97,38 @@ device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is
 
 # TODO 1: Write a system prompt here giving instructions to the 
 # AI model on how to handle the user's input.
-SYSTEM_PROMPT = '''
-You are a chemical query parser. You do not answer the user's question and you do not calculate chemical properties.
+SYSTEM_PROMPT = """
+You are a chemical query parser.
 
-Convert the user's request into valid JSON only.
+Convert the user's request into valid JSON only. Do not answer the question,
+calculate chemical properties, explain your reasoning, validate SMILES strings,
+or use Markdown code fences.
 
-The supported properties are:
+Return exactly this JSON schema:
+
+{
+  "requests": [
+    {
+      "smiles": "exact SMILES string from the user",
+      "properties": [
+        "supported_property_name"
+      ]
+    }
+  ],
+  "missing_smiles": false,
+  "unknown_request": false
+}
+
+The top-level JSON object must contain exactly these keys:
+
+- requests
+- missing_smiles
+- unknown_request
+
+missing_smiles and unknown_request must be JSON Boolean values: true or false.
+
+Supported property names are exactly:
+
 - molecular_weight
 - logP
 - TPSA
@@ -43,38 +138,73 @@ The supported properties are:
 - rings
 - aromatic_rings
 
-Treat every chemical string as a SMILES string, not as a molecular formula.
-Preserve SMILES exactly, including lowercase aromatic atoms such as c1ccccc1.
-Do not reinterpret, rename, or correct a SMILES string.
-Recognize spelling variations such as:
-- molecular weight, mol weight, mol. weight
-- logP, lipophilicity, hydrophobicity
-- TPSA, topological polar surface area
-- hydrogen bond donors, HBD
-- hydrogen bond acceptors, HBA
-- rotatable bonds
-- rings
-- aromatic rings
+Recognize equivalent wording and spelling variations:
 
-Return one request object for every property-and-SMILES pair.
-If the user asks for multiple properties or molecules, return multiple request objects.
-If a supported property is requested without a SMILES string, set missing_smiles to true.
-If the request is unrelated to the supported properties, set unsupported_request to true.
-Do not calculate values.
-Do not provide explanations.
-Return JSON only using this schema:
+- molecular weight, molecular wght, mol weight, mol. weight
+  -> molecular_weight
+- lipophilicity, hydrophobicity, logP, log P
+  -> logP
+- TPSA, topological polar surface area
+  -> TPSA
+- hydrogen bond donors, HBD
+  -> hydrogen_bond_donors
+- hydrogen bond acceptors, HBA
+  -> hydrogen_bond_acceptors
+- rotatable bonds
+  -> rotatable_bonds
+- rings, number of rings
+  -> rings
+- aromatic rings, number of aromatic rings
+  -> aromatic_rings
+
+Treat every chemical string as a SMILES string. Preserve it exactly as written,
+including uppercase/lowercase letters, aromatic atoms, numbers, brackets, and
+bond symbols. Do not convert it to a molecular formula, chemical name, or
+different SMILES string.
+
+Each SMILES string must appear only once in requests. Put all requested
+properties for that SMILES string into its properties list.
+
+For example:
+
+User: Calculate the molecular weight and logP of CCO.
+
+Return:
 
 {
   "requests": [
     {
-      "property": "one_supported_property",
-      "smiles": "exact_smiles_from_user"
+      "smiles": "CCO",
+      "properties": [
+        "molecular_weight",
+        "logP"
+      ]
     }
   ],
-  "unsupported_request": true_or_false,
-  "missing_smiles": true_or_false
+  "missing_smiles": false,
+  "unknown_request": false
 }
-'''
+
+If the user requests a supported property but supplies no SMILES string, return:
+
+{
+  "requests": [],
+  "missing_smiles": true,
+  "unknown_request": false
+}
+
+If the user asks for an unsupported task, return:
+
+{
+  "requests": [],
+  "missing_smiles": false,
+  "unknown_request": true
+}
+
+If an unknown or invalid-looking chemical string is supplied with a supported
+property, preserve it in requests exactly as written. Do not decide whether it
+is a valid SMILES string; RDKit will validate it.
+"""
 
 # ---------------------------------------------------------------------------
 # Load the tokenizer and model
@@ -145,6 +275,105 @@ while True:
     # TODO 1.5: Make sure you delete this line of code before submitting.
     # This line of code is simply here to help you to debug.
     print('LLM response so far: ', response) 
+
+
+    # Parse the JSON response
+
+    ## Is the response a valid JSON?
+
+    try:
+        response_json = json.loads(response)
+    except json.JSONDecodeError:
+        print("Error: The model's response is not valid JSON.")
+        continue
+
+    ## Does the JSON have the right structure?
+
+    json_schema = {
+        "requests": list,
+        "missing_smiles": bool,
+        "unknown_request": bool,
+    }
+
+    if not all(key in response_json for key in json_schema):
+        print("Error: The model's response JSON does not have the expected keys.")
+        continue
+
+    ## Are request and smiles good?
+
+    if response_json["unknown_request"]:
+        print("Error: Invalid request detected")
+        continue
+
+    if response_json["missing_smiles"]:
+        print("Error: SMILES string not detected")
+        continue
+
+    ## Get requests and make list for processing
+
+    requests = response_json["requests"]
+
+    if not isinstance(requests, list):
+        print("Error: The 'requests' field is not a list.")
+        continue
+
+    ## Process each request
+
+    PROPERTIES = ["molecular_weight", 
+                  "logP", 
+                  "TPSA", 
+                  "hydrogen_bond_donors",
+                  "hydrogen_bond_acceptors", 
+                  "rotatable_bonds", 
+                  "rings", 
+                  "aromatic_rings"]
+
+
+    # This loop goes through each request,
+    # which has a single SMILES and a list
+    # of properties
+    for request in requests:
+        properties = request.get("properties", [])
+        output_properties = []
+
+        smiles_string = request["smiles"]
+        smiles_mol = Chem.MolFromSmiles(smiles_string)
+
+        if smiles_mol is None:
+            # This should be visible to the user
+            print(f"Error: Invalid SMILES string '{smiles_string}'.")
+            continue
+
+        for property_name in properties:        
+            if property_name not in PROPERTIES:
+                print(f"Error: Unsupported property '{property_name}'.")
+                continue
+
+            property_value = None
+
+            if property_name == "molecular_weight":
+                property_value = Descriptors.MolWt(smiles_mol)
+            elif property_name == "logP":
+                property_value = Crippen.MolLogP(smiles_mol)
+            elif property_name == "TPSA":
+                property_value = rdMolDescriptors.CalcTPSA(smiles_mol)
+            elif property_name == "hydrogen_bond_donors":
+                property_value = Lipinski.NumHDonors(smiles_mol)
+            elif property_name == "hydrogen_bond_acceptors":
+                property_value = Lipinski.NumHAcceptors(smiles_mol)
+            elif property_name == "rotatable_bonds":
+                property_value = Lipinski.NumRotatableBonds(smiles_mol)
+            elif property_name == "rings":
+                property_value = Lipinski.RingCount(smiles_mol)
+            elif property_name == "aromatic_rings":
+                property_value = Lipinski.NumAromaticRings(smiles_mol)
+
+            output_properties.append({
+                "property": property_name,
+                "value": property_value
+            })
+
+        print_properties_table(smiles_string, output_properties)
 
     # -----------------------------------------------------------------------
     # Do your work to do the tool calls based on LLM response
