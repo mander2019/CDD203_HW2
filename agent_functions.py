@@ -35,10 +35,10 @@ def json_validation(response):
         return "Error: The model's response JSON has incorrect data types."
 
     if response_json["unknown_request"]:
-        return "Error: Invalid request detected"
+        return "I only answer questions about molecular weight, logP, TPSA, hydrogen bond donors, hydrogen bond acceptors, rotatable bonds, rings, and aromatic rings"
 
     if response_json["missing_smiles"]:
-        return "Error: SMILES string not detected"
+        return "Please provide a valid SMILES string"
 
     if not isinstance(response_json["requests"], list):
         return "Error: The 'requests' field is not a list."
@@ -52,7 +52,8 @@ def json_validation(response):
             invalid_smiles.append(smiles_string)
 
     if invalid_smiles:
-        return f"Error: The following SMILES strings are invalid: {', '.join(invalid_smiles)}"
+        return (f"'{', '.join(invalid_smiles)}' is not a valid SMILES string. "
+                "Please provide a valid SMILES string.")
 
     return None
 
@@ -136,9 +137,7 @@ def process_requests(requests, method="rdkit"):
 
     for request in requests:
         properties = request.get("properties", [])
-
         smiles_string = request["smiles"]
-        smiles_mol = Chem.MolFromSmiles(smiles_string)
 
         smiles_properties = get_chemical_properties(smiles_string, properties, method=method)
         all_output_properties.append((smiles_string, smiles_properties))
@@ -161,7 +160,7 @@ def get_chemical_properties(smiles, request, method):
             value = get_property_mcp(smiles, property_name)
 
         output_properties.append({
-            "property": request,
+            "property": property_name,
             "value": value,
         })
 

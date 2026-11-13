@@ -91,9 +91,9 @@ Property-language mapping:
 - aromatic rings, aromatic ring count
   -> aromatic_rings
 
-Treat chemical-looking strings as SMILES strings. Preserve SMILES exactly as
-written, including uppercase/lowercase letters, aromatic atoms, digits,
-brackets, punctuation, and bond symbols.
+Treat chemical-looking strings as SMILES strings. Preserve valid SMILES characters 
+exactly. Ignore surrounding conversational punctuation, such as trailing ?, !, 
+commas, and sentence-ending periods.
 
 Do not:
 - Interpret SMILES as molecular formulas.
@@ -270,8 +270,16 @@ while True:
     # -----------------------------------------------------------------------
     # `inference_mode` disables gradient tracking -> faster and uses less
     # memory since we're only doing a forward pass, not training.
+    
+    model.eval()
+    
     with torch.inference_mode():
-        output = model.generate(**inputs, max_new_tokens=256)
+        output = model.generate(
+                    **inputs, 
+                    max_new_tokens=256
+                    do_sample=False,
+                    use_cache=True,
+                    temperature=0.0,)
 
     # -----------------------------------------------------------------------
     # Decode and print just the newly generated text
@@ -284,6 +292,7 @@ while True:
 
     # TODO 1.5: Make sure you delete this line of code before submitting.
     # This line of code is simply here to help you to debug.
+    
     print('LLM response so far: ', response) 
 
     validation_error_message = agent_functions.json_validation(response)
