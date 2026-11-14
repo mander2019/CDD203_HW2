@@ -8,13 +8,13 @@ JSON_SCHEMA = {
         "unknown_request": bool,
     }
 
-PROPERTIES = ["molecular_weight", 
-              "logP", 
-              "TPSA", 
+PROPERTIES = ["molecular_weight",
+              "logP",
+              "TPSA",
               "hydrogen_bond_donors",
-              "hydrogen_bond_acceptors", 
-              "rotatable_bonds", 
-              "rings", 
+              "hydrogen_bond_acceptors",
+              "rotatable_bonds",
+              "rings",
               "aromatic_rings"]
 
 # JSON validation for model response
