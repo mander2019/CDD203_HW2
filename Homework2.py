@@ -276,10 +276,10 @@ while True:
     with torch.inference_mode():
         output = model.generate(
                     **inputs, 
-                    max_new_tokens=256,
+                    max_new_tokens=160,
                     do_sample=False,
-                    use_cache=True,
-                    temperature=0.0,)
+                    use_cache=True
+                    )
 
     # -----------------------------------------------------------------------
     # Decode and print just the newly generated text
