@@ -22,33 +22,74 @@ PROPERTIES = ["molecular_weight",
 def json_validation(response):
     """Validate the JSON response from the model."""
 
-    try: # Is the response a valid JSON?
+    try:
         response_json = json.loads(response)
     except json.JSONDecodeError:
         return "Error: The model's response is not valid JSON."
 
-    ## Does the JSON have the right structure?
-    if not all(key in response_json for key in JSON_SCHEMA):
+    if not isinstance(response_json, dict):
+        return "Error: The model's response JSON must be an object."
+
+    if set(response_json) != set(JSON_SCHEMA):
         return "Error: The model's response JSON does not have the expected keys."
 
-    if not all(isinstance(response_json[key], JSON_SCHEMA[key]) for key in JSON_SCHEMA):
+    if not all(
+        isinstance(response_json[key], expected_type)
+        for key, expected_type in JSON_SCHEMA.items()
+    ):
         return "Error: The model's response JSON has incorrect data types."
 
-    if response_json["unknown_request"]:
+    requests = response_json["requests"]
+    missing_smiles = response_json["missing_smiles"]
+    unknown_request = response_json["unknown_request"]
+
+    if missing_smiles and unknown_request:
+        return "Error: The model's response JSON has conflicting request flags."
+
+    if missing_smiles or unknown_request:
+        if requests:
+            return "Error: The model's response JSON must have an empty requests list when a request flag is true."
+
+    if unknown_request:
         return "I only answer questions about molecular weight, logP, TPSA, hydrogen bond donors, hydrogen bond acceptors, rotatable bonds, rings, and aromatic rings"
 
-    if response_json["missing_smiles"]:
+    if missing_smiles:
         return "Please provide a valid SMILES string"
 
-    if not isinstance(response_json["requests"], list):
-        return "Error: The 'requests' field is not a list."
-
-    # Identify invalid SMILES strings
+    if not requests:
+        return "Error: The model's response JSON must contain at least one request."
 
     invalid_smiles = []
-    for request in response_json["requests"]:
-        smiles_string = request.get("smiles", "")
-        if not isinstance(smiles_string, str) or Chem.MolFromSmiles(smiles_string) is None:
+    seen_smiles = set()
+    allowed_properties = set(PROPERTIES)
+
+    for request in requests:
+        if not isinstance(request, dict) or set(request) != {"smiles", "properties"}:
+            return "Error: Each request must contain exactly 'smiles' and 'properties'."
+
+        smiles_string = request["smiles"]
+        properties = request["properties"]
+
+        if not isinstance(smiles_string, str) or not smiles_string.strip():
+            return "Error: Each request must contain a non-empty SMILES string."
+
+        if not isinstance(properties, list) or not properties:
+            return "Error: Each request must contain a non-empty properties list."
+
+        if not all(isinstance(property_name, str) for property_name in properties):
+            return "Error: Property names must be strings."
+
+        if any(property_name not in allowed_properties for property_name in properties):
+            return "Error: The model requested an unsupported chemical property."
+
+        if len(properties) != len(set(properties)):
+            return "Error: A request cannot contain duplicate properties."
+
+        if smiles_string in seen_smiles:
+            return "Error: Each SMILES string must appear in only one request."
+        seen_smiles.add(smiles_string)
+
+        if Chem.MolFromSmiles(smiles_string) is None:
             invalid_smiles.append(smiles_string)
 
     if invalid_smiles:
