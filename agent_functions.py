@@ -1,21 +1,21 @@
 import json
+import logging
 from rdkit import Chem
 from rdkit.Chem import Descriptors, Crippen, Lipinski, QED, rdMolDescriptors
 
-JSON_SCHEMA = {
-        "requests": list,
-        "missing_smiles": bool,
-        "unknown_request": bool,
-    }
+JSON_SCHEMA = {"requests": list}
 
-PROPERTIES = ["molecular_weight",
-              "logP",
-              "TPSA",
-              "hydrogen_bond_donors",
-              "hydrogen_bond_acceptors",
-              "rotatable_bonds",
-              "rings",
-              "aromatic_rings"]
+PROPERTIES = (
+    "molecular_weight",
+    "logP",
+    "TPSA",
+    "hydrogen_bond_donors",
+    "hydrogen_bond_acceptors",
+    "rotatable_bonds",
+    "rings",
+    "aromatic_rings",
+)
+
 
 # JSON validation for model response
 
@@ -33,61 +33,34 @@ def json_validation(response):
     if set(response_json) != set(JSON_SCHEMA):
         return "Error: The model's response JSON does not have the expected keys."
 
-    if not all(
-        isinstance(response_json[key], expected_type)
-        for key, expected_type in JSON_SCHEMA.items()
-    ):
-        return "Error: The model's response JSON has incorrect data types."
-
     requests = response_json["requests"]
-    missing_smiles = response_json["missing_smiles"]
-    unknown_request = response_json["unknown_request"]
-
-    if missing_smiles and unknown_request:
-        return "Error: The model's response JSON has conflicting request flags."
-
-    if missing_smiles or unknown_request:
-        if requests:
-            return "Error: The model's response JSON must have an empty requests list when a request flag is true."
-
-    if unknown_request:
-        return "I only answer questions about molecular weight, logP, TPSA, hydrogen bond donors, hydrogen bond acceptors, rotatable bonds, rings, and aromatic rings"
-
-    if missing_smiles:
-        return "Please provide a valid SMILES string"
+    if not isinstance(requests, list):
+        return "Error: The 'requests' field must be a list."
 
     if not requests:
-        return "Error: The model's response JSON must contain at least one request."
+        return "I can only answer questions about the supported chemical properties."
 
     invalid_smiles = []
-    seen_smiles = set()
     allowed_properties = set(PROPERTIES)
 
     for request in requests:
-        if not isinstance(request, dict) or set(request) != {"smiles", "properties"}:
-            return "Error: Each request must contain exactly 'smiles' and 'properties'."
+        if not isinstance(request, dict) or set(request) != {"smiles", "property"}:
+            return "Error: Each request must contain exactly 'smiles' and 'property'."
 
         smiles_string = request["smiles"]
-        properties = request["properties"]
+        property_name = request["property"]
 
-        if not isinstance(smiles_string, str) or not smiles_string.strip():
-            return "Error: Each request must contain a non-empty SMILES string."
-
-        if not isinstance(properties, list) or not properties:
-            return "Error: Each request must contain a non-empty properties list."
-
-        if not all(isinstance(property_name, str) for property_name in properties):
+        if not isinstance(property_name, str):
             return "Error: Property names must be strings."
 
-        if any(property_name not in allowed_properties for property_name in properties):
-            return "Error: The model requested an unsupported chemical property."
+        if property_name not in allowed_properties:
+            return (
+                "I can only answer questions about these supported properties: "
+                f"{', '.join(PROPERTIES)}."
+            )
 
-        if len(properties) != len(set(properties)):
-            return "Error: A request cannot contain duplicate properties."
-
-        if smiles_string in seen_smiles:
-            return "Error: Each SMILES string must appear in only one request."
-        seen_smiles.add(smiles_string)
+        if not isinstance(smiles_string, str) or not smiles_string.strip():
+            return "Please provide a valid SMILES string."
 
         if Chem.MolFromSmiles(smiles_string) is None:
             invalid_smiles.append(smiles_string)
@@ -97,6 +70,15 @@ def json_validation(response):
                 "Please provide a valid SMILES string.")
 
     return None
+
+
+def validate_model_response(response):
+    """Run JSON validation and convert expected validation exceptions to errors."""
+    try:
+        return json_validation(response)
+    except (TypeError, ValueError):
+        logging.exception("Model response validation raised an exception.")
+        return "Error: The model's response could not be validated."
 
 # Text formatting functions
 
@@ -173,17 +155,27 @@ def print_properties_tables(all_output_properties):
 
 def process_requests(requests, method="rdkit"):
     """Process the requests and return a list of calculated properties."""
-    
-    all_output_properties = []
 
+    properties_by_smiles = {}
+    seen_requests = set()
     for request in requests:
-        properties = request.get("properties", [])
         smiles_string = request["smiles"]
+        property_name = request["property"]
+        if property_name not in PROPERTIES:
+            raise ValueError(f"Unsupported chemical property: {property_name}")
+        request_pair = (smiles_string, property_name)
+        if request_pair in seen_requests:
+            continue
+        seen_requests.add(request_pair)
+        properties_by_smiles.setdefault(smiles_string, []).append(property_name)
 
-        smiles_properties = get_chemical_properties(smiles_string, properties, method=method)
-        all_output_properties.append((smiles_string, smiles_properties))
-    
-    return all_output_properties
+    return [
+        (
+            smiles_string,
+            get_chemical_properties(smiles_string, properties, method=method),
+        )
+        for smiles_string, properties in properties_by_smiles.items()
+    ]
 
 def get_chemical_properties(smiles, request, method):
     """Calculate chemical properties using RDKit."""
